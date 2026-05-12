@@ -10,6 +10,7 @@ import (
 
 	"github.com/csolg/go-url-shortener/internal/repository"
 	"github.com/csolg/go-url-shortener/internal/storage"
+	"github.com/go-chi/chi/v5"
 )
 
 const shortURLPrefix = "http://localhost:8080/"
@@ -67,7 +68,7 @@ func (a *app) redirectToOriginalURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id := strings.TrimPrefix(r.URL.Path, "/")
+	id := chi.URLParam(r, "id")
 	if id == "" {
 		http.Error(w, "Missing short URL id", http.StatusBadRequest)
 		return
@@ -87,23 +88,19 @@ func (a *app) redirectToOriginalURL(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusTemporaryRedirect)
 }
 
-func (a *app) handleRequest(w http.ResponseWriter, r *http.Request) {
-	switch {
-	case r.Method == http.MethodPost && r.URL.Path == "/":
-		a.createShortURL(w, r)
-	case r.Method == http.MethodGet && r.URL.Path != "/":
-		a.redirectToOriginalURL(w, r)
-	default:
-		http.Error(w, "Bad request", http.StatusBadRequest)
-	}
+func badRequest(w http.ResponseWriter, _ *http.Request) {
+	http.Error(w, "Bad request", http.StatusBadRequest)
 }
 
-func newRouter(repo urlRepository) *http.ServeMux {
+func newRouter(repo urlRepository) http.Handler {
 	app := &app{repo: repo}
-	mux := http.NewServeMux()
-	mux.HandleFunc(`/`, app.handleRequest)
+	router := chi.NewRouter()
+	router.Post("/", app.createShortURL)
+	router.Get("/{id}", app.redirectToOriginalURL)
+	router.NotFound(badRequest)
+	router.MethodNotAllowed(badRequest)
 
-	return mux
+	return router
 }
 
 func databaseDSN() string {
