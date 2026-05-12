@@ -1,68 +1,38 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"io"
 	"net/http"
+	"os"
 	"strings"
-	"sync"
+
+	"github.com/csolg/go-url-shortener/internal/repository"
+	"github.com/csolg/go-url-shortener/internal/storage"
 )
 
 const shortURLPrefix = "http://localhost:8080/"
 
-const alphabet = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+type urlRepository interface {
+	Save(ctx context.Context, originalURL string) (string, error)
+	Get(ctx context.Context, shortID string) (string, error)
+}
 
-var (
-	mu       sync.Mutex
-	nextID   uint64
-	urlStore = map[string]string{}
-)
+type app struct {
+	repo urlRepository
+}
 
 func Encode(num uint64) string {
-	if num == 0 {
-		return string(alphabet[0])
-	}
-
-	base := uint64(len(alphabet))
-	s := make([]byte, 0, 11)
-
-	for num > 0 {
-		s = append(s, alphabet[num%base])
-		num /= base
-	}
-
-	// reverse
-	for i, j := 0, len(s)-1; i < j; i, j = i+1, j-1 {
-		s[i], s[j] = s[j], s[i]
-	}
-
-	return string(s)
+	return repository.Encode(num)
 }
 
 func Decode(s string) uint64 {
-	var num uint64
-	base := uint64(len(alphabet))
-
-	for i := 0; i < len(s); i++ {
-		char := s[i]
-
-		var val uint64
-
-		switch {
-		case char >= '0' && char <= '9':
-			val = uint64(char - '0')
-		case char >= 'a' && char <= 'z':
-			val = uint64(char-'a') + 10
-		case char >= 'A' && char <= 'Z':
-			val = uint64(char-'A') + 36
-		}
-
-		num = num*base + val
-	}
-
+	num, _ := repository.Decode(s)
 	return num
 }
 
-func createShortURL(w http.ResponseWriter, r *http.Request) {
+func (a *app) createShortURL(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost || r.URL.Path != "/" {
 		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
@@ -80,26 +50,18 @@ func createShortURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// create short url
-	shortURL := generateShortURL(url)
+	id, err := a.repo.Save(r.Context(), url)
+	if err != nil {
+		http.Error(w, "Failed to save URL", http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusCreated)
-	w.Write([]byte(shortURL))
+	w.Write([]byte(shortURLPrefix + id))
 }
 
-func generateShortURL(url string) string {
-	mu.Lock()
-	defer mu.Unlock()
-
-	nextID++
-	id := Encode(nextID)
-	urlStore[id] = url
-
-	return shortURLPrefix + id
-}
-
-func redirectToOriginalURL(w http.ResponseWriter, r *http.Request) {
+func (a *app) redirectToOriginalURL(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet || r.URL.Path == "/" {
 		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
@@ -111,11 +73,13 @@ func redirectToOriginalURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mu.Lock()
-	originalURL, ok := urlStore[id]
-	mu.Unlock()
-	if !ok {
+	originalURL, err := a.repo.Get(r.Context(), id)
+	if errors.Is(err, repository.ErrNotFound) {
 		http.Error(w, "Short URL not found", http.StatusBadRequest)
+		return
+	}
+	if err != nil {
+		http.Error(w, "Failed to get URL", http.StatusInternalServerError)
 		return
 	}
 
@@ -123,28 +87,44 @@ func redirectToOriginalURL(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusTemporaryRedirect)
 }
 
-func handleRequest(w http.ResponseWriter, r *http.Request) {
+func (a *app) handleRequest(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodPost && r.URL.Path == "/":
-		createShortURL(w, r)
+		a.createShortURL(w, r)
 	case r.Method == http.MethodGet && r.URL.Path != "/":
-		redirectToOriginalURL(w, r)
+		a.redirectToOriginalURL(w, r)
 	default:
 		http.Error(w, "Bad request", http.StatusBadRequest)
 	}
 }
 
-func newRouter() *http.ServeMux {
+func newRouter(repo urlRepository) *http.ServeMux {
+	app := &app{repo: repo}
 	mux := http.NewServeMux()
-	mux.HandleFunc(`/`, handleRequest)
+	mux.HandleFunc(`/`, app.handleRequest)
 
 	return mux
 }
 
-func main() {
-	mux := newRouter()
+func databaseDSN() string {
+	if dsn := os.Getenv("DATABASE_DSN"); dsn != "" {
+		return dsn
+	}
 
-	err := http.ListenAndServe(`:8080`, mux)
+	return "shortener.db"
+}
+
+func main() {
+	ctx := context.Background()
+	db, err := storage.OpenSQLite(ctx, databaseDSN())
+	if err != nil {
+		panic(err)
+	}
+	defer db.Close()
+
+	mux := newRouter(repository.NewURLRepository(db))
+
+	err = http.ListenAndServe(`:8080`, mux)
 	if err != nil {
 		panic(err)
 	}
