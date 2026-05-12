@@ -13,7 +13,8 @@ import (
 )
 
 func TestCreateAndRedirectShortURL(t *testing.T) {
-	router := newTestRouter(t)
+	baseURL := "http://localhost:8000"
+	router := newTestRouter(t, baseURL)
 	originalURL := "https://practicum.yandex.ru/"
 
 	createReq := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(originalURL))
@@ -29,6 +30,7 @@ func TestCreateAndRedirectShortURL(t *testing.T) {
 	}
 
 	shortURL := createRec.Body.String()
+	shortURLPrefix := baseURL + "/"
 	if !strings.HasPrefix(shortURL, shortURLPrefix) {
 		t.Fatalf("expected short URL with prefix %q, got %q", shortURLPrefix, shortURL)
 	}
@@ -52,7 +54,7 @@ func TestCreateAndRedirectShortURL(t *testing.T) {
 }
 
 func TestBadRequests(t *testing.T) {
-	router := newTestRouter(t)
+	router := newTestRouter(t, "http://localhost:8080")
 
 	tests := []struct {
 		name   string
@@ -106,7 +108,7 @@ func TestBadRequests(t *testing.T) {
 	}
 }
 
-func newTestRouter(t *testing.T) http.Handler {
+func newTestRouter(t *testing.T, baseURL string) http.Handler {
 	t.Helper()
 
 	db, err := storage.OpenSQLite(context.Background(), filepath.Join(t.TempDir(), "shortener.db"))
@@ -119,5 +121,5 @@ func newTestRouter(t *testing.T) http.Handler {
 		}
 	})
 
-	return newRouter(repository.NewURLRepository(db))
+	return newRouterWithBaseURL(repository.NewURLRepository(db), baseURL)
 }

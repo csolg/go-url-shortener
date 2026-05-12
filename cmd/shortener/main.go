@@ -8,12 +8,11 @@ import (
 	"os"
 	"strings"
 
+	"github.com/csolg/go-url-shortener/internal/config"
 	"github.com/csolg/go-url-shortener/internal/repository"
 	"github.com/csolg/go-url-shortener/internal/storage"
 	"github.com/go-chi/chi/v5"
 )
-
-const shortURLPrefix = "http://localhost:8080/"
 
 type urlRepository interface {
 	Save(ctx context.Context, originalURL string) (string, error)
@@ -21,7 +20,8 @@ type urlRepository interface {
 }
 
 type app struct {
-	repo urlRepository
+	repo    urlRepository
+	baseURL string
 }
 
 func Encode(num uint64) string {
@@ -59,7 +59,7 @@ func (a *app) createShortURL(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusCreated)
-	w.Write([]byte(shortURLPrefix + id))
+	w.Write([]byte(strings.TrimRight(a.baseURL, "/") + "/" + id))
 }
 
 func (a *app) redirectToOriginalURL(w http.ResponseWriter, r *http.Request) {
@@ -93,7 +93,14 @@ func badRequest(w http.ResponseWriter, _ *http.Request) {
 }
 
 func newRouter(repo urlRepository) http.Handler {
-	app := &app{repo: repo}
+	return newRouterWithBaseURL(repo, config.DefaultBaseURL)
+}
+
+func newRouterWithBaseURL(repo urlRepository, baseURL string) http.Handler {
+	app := &app{
+		repo:    repo,
+		baseURL: baseURL,
+	}
 	router := chi.NewRouter()
 	router.Post("/", app.createShortURL)
 	router.Get("/{id}", app.redirectToOriginalURL)
@@ -112,6 +119,11 @@ func databaseDSN() string {
 }
 
 func main() {
+	cfg, err := config.Parse(os.Args[1:])
+	if err != nil {
+		panic(err)
+	}
+
 	ctx := context.Background()
 	db, err := storage.OpenSQLite(ctx, databaseDSN())
 	if err != nil {
@@ -119,9 +131,9 @@ func main() {
 	}
 	defer db.Close()
 
-	mux := newRouter(repository.NewURLRepository(db))
+	mux := newRouterWithBaseURL(repository.NewURLRepository(db), cfg.BaseURL)
 
-	err = http.ListenAndServe(`:8080`, mux)
+	err = http.ListenAndServe(cfg.ServerAddress, mux)
 	if err != nil {
 		panic(err)
 	}
