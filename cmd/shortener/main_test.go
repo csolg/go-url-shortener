@@ -1,117 +1,58 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/csolg/go-url-shortener/internal/repository"
+	"github.com/csolg/go-url-shortener/internal/storage"
 )
 
-func TestEncodeUsesBase62Alphabet(t *testing.T) {
-	tests := []struct {
-		name string
-		num  uint64
-		want string
-	}{
-		{
-			name: "zero",
-			num:  0,
-			want: "0",
-		},
-		{
-			name: "last digit",
-			num:  61,
-			want: "Z",
-		},
-		{
-			name: "first two-digit value",
-			num:  62,
-			want: "10",
-		},
-		{
-			name: "next two-digit value",
-			num:  63,
-			want: "11",
-		},
-		{
-			name: "first three-digit value",
-			num:  3844,
-			want: "100",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := Encode(tt.num)
-			if got != tt.want {
-				t.Fatalf("Encode(%d) = %q, want %q", tt.num, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestCreateShortURL(t *testing.T) {
-	resetTestStore()
-
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("https://practicum.yandex.ru/"))
-	rec := httptest.NewRecorder()
-
-	newRouter().ServeHTTP(rec, req)
-
-	res := rec.Result()
-	defer res.Body.Close()
-
-	if res.StatusCode != http.StatusCreated {
-		t.Fatalf("expected status %d, got %d", http.StatusCreated, res.StatusCode)
-	}
-
-	contentType := res.Header.Get("Content-Type")
-	if contentType != "text/plain" {
-		t.Fatalf("expected Content-Type text/plain, got %q", contentType)
-	}
-
-	body := rec.Body.String()
-	if !strings.HasPrefix(body, "http://localhost:8080/") {
-		t.Fatalf("expected short URL with localhost prefix, got %q", body)
-	}
-
-	id := strings.TrimPrefix(body, "http://localhost:8080/")
-	if id == "" {
-		t.Fatal("expected non-empty short URL id")
-	}
-}
-
-func TestRedirectToOriginalURL(t *testing.T) {
-	resetTestStore()
-
+func TestCreateAndRedirectShortURL(t *testing.T) {
+	router := newTestRouter(t)
 	originalURL := "https://practicum.yandex.ru/"
+
 	createReq := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(originalURL))
 	createRec := httptest.NewRecorder()
-	router := newRouter()
 
 	router.ServeHTTP(createRec, createReq)
 
-	id := strings.TrimPrefix(createRec.Body.String(), shortURLPrefix)
+	createRes := createRec.Result()
+	defer createRes.Body.Close()
+
+	if createRes.StatusCode != http.StatusCreated {
+		t.Fatalf("expected create status %d, got %d", http.StatusCreated, createRes.StatusCode)
+	}
+
+	shortURL := createRec.Body.String()
+	if !strings.HasPrefix(shortURL, shortURLPrefix) {
+		t.Fatalf("expected short URL with prefix %q, got %q", shortURLPrefix, shortURL)
+	}
+
+	id := strings.TrimPrefix(shortURL, shortURLPrefix)
 	redirectReq := httptest.NewRequest(http.MethodGet, "/"+id, nil)
 	redirectRec := httptest.NewRecorder()
 
 	router.ServeHTTP(redirectRec, redirectReq)
 
-	res := redirectRec.Result()
-	defer res.Body.Close()
+	redirectRes := redirectRec.Result()
+	defer redirectRes.Body.Close()
 
-	if res.StatusCode != http.StatusTemporaryRedirect {
-		t.Fatalf("expected status %d, got %d", http.StatusTemporaryRedirect, res.StatusCode)
+	if redirectRes.StatusCode != http.StatusTemporaryRedirect {
+		t.Fatalf("expected redirect status %d, got %d", http.StatusTemporaryRedirect, redirectRes.StatusCode)
 	}
 
-	location := res.Header.Get("Location")
-	if location != originalURL {
+	if location := redirectRes.Header.Get("Location"); location != originalURL {
 		t.Fatalf("expected Location %q, got %q", originalURL, location)
 	}
 }
 
 func TestBadRequests(t *testing.T) {
-	resetTestStore()
+	router := newTestRouter(t)
 
 	tests := []struct {
 		name   string
@@ -148,8 +89,6 @@ func TestBadRequests(t *testing.T) {
 		},
 	}
 
-	router := newRouter()
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest(tt.method, tt.path, strings.NewReader(tt.body))
@@ -167,10 +106,18 @@ func TestBadRequests(t *testing.T) {
 	}
 }
 
-func resetTestStore() {
-	mu.Lock()
-	defer mu.Unlock()
+func newTestRouter(t *testing.T) http.Handler {
+	t.Helper()
 
-	nextID = 0
-	urlStore = map[string]string{}
+	db, err := storage.OpenSQLite(context.Background(), filepath.Join(t.TempDir(), "shortener.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("close sqlite: %v", err)
+		}
+	})
+
+	return newRouter(repository.NewURLRepository(db))
 }
