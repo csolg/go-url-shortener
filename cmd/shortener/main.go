@@ -92,10 +92,6 @@ func badRequest(w http.ResponseWriter, _ *http.Request) {
 	http.Error(w, "Bad request", http.StatusBadRequest)
 }
 
-func newRouter(repo urlRepository) http.Handler {
-	return newRouterWithBaseURL(repo, config.DefaultBaseURL)
-}
-
 func newRouterWithBaseURL(repo urlRepository, baseURL string) http.Handler {
 	app := &app{
 		repo:    repo,
