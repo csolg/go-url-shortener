@@ -89,6 +89,18 @@ func TestBadRequests(t *testing.T) {
 			method: http.MethodPost,
 			path:   "/",
 		},
+		{
+			name:   "POST relative URL",
+			method: http.MethodPost,
+			path:   "/",
+			body:   "foo",
+		},
+		{
+			name:   "POST local path",
+			method: http.MethodPost,
+			path:   "/",
+			body:   "/local/path",
+		},
 	}
 
 	for _, tt := range tests {

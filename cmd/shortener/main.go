@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 
@@ -14,44 +16,28 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-type urlRepository interface {
-	Save(ctx context.Context, originalURL string) (string, error)
-	Get(ctx context.Context, shortID string) (string, error)
-}
-
 type app struct {
-	repo    urlRepository
+	repo    repository.URLStore
 	baseURL string
 }
 
-func Encode(num uint64) string {
-	return repository.Encode(num)
-}
-
-func Decode(s string) uint64 {
-	num, _ := repository.Decode(s)
-	return num
-}
-
 func (a *app) createShortURL(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost || r.URL.Path != "/" {
-		http.Error(w, "Bad request", http.StatusBadRequest)
-		return
-	}
-
-	// request body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "Failed to read request body", http.StatusBadRequest)
 		return
 	}
-	url := string(body)
-	if strings.TrimSpace(url) == "" {
+	originalURL := strings.TrimSpace(string(body))
+	if originalURL == "" {
 		http.Error(w, "Empty URL", http.StatusBadRequest)
 		return
 	}
+	if !isAbsoluteURL(originalURL) {
+		http.Error(w, "Invalid URL", http.StatusBadRequest)
+		return
+	}
 
-	id, err := a.repo.Save(r.Context(), url)
+	id, err := a.repo.Save(r.Context(), originalURL)
 	if err != nil {
 		http.Error(w, "Failed to save URL", http.StatusInternalServerError)
 		return
@@ -59,15 +45,12 @@ func (a *app) createShortURL(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusCreated)
-	w.Write([]byte(strings.TrimRight(a.baseURL, "/") + "/" + id))
+	if _, err := fmt.Fprintf(w, "%s/%s", strings.TrimRight(a.baseURL, "/"), id); err != nil {
+		return
+	}
 }
 
 func (a *app) redirectToOriginalURL(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet || r.URL.Path == "/" {
-		http.Error(w, "Bad request", http.StatusBadRequest)
-		return
-	}
-
 	id := chi.URLParam(r, "id")
 	if id == "" {
 		http.Error(w, "Missing short URL id", http.StatusBadRequest)
@@ -88,11 +71,20 @@ func (a *app) redirectToOriginalURL(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusTemporaryRedirect)
 }
 
+func isAbsoluteURL(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+
+	return parsed.IsAbs() && parsed.Host != ""
+}
+
 func badRequest(w http.ResponseWriter, _ *http.Request) {
 	http.Error(w, "Bad request", http.StatusBadRequest)
 }
 
-func newRouterWithBaseURL(repo urlRepository, baseURL string) http.Handler {
+func newRouterWithBaseURL(repo repository.URLStore, baseURL string) http.Handler {
 	app := &app{
 		repo:    repo,
 		baseURL: baseURL,
@@ -106,14 +98,6 @@ func newRouterWithBaseURL(repo urlRepository, baseURL string) http.Handler {
 	return router
 }
 
-func databaseDSN() string {
-	if dsn := os.Getenv("DATABASE_DSN"); dsn != "" {
-		return dsn
-	}
-
-	return "shortener.db"
-}
-
 func main() {
 	cfg, err := config.Parse(os.Args[1:])
 	if err != nil {
@@ -121,7 +105,7 @@ func main() {
 	}
 
 	ctx := context.Background()
-	db, err := storage.OpenSQLite(ctx, databaseDSN())
+	db, err := storage.OpenSQLite(ctx, cfg.DatabaseDSN)
 	if err != nil {
 		panic(err)
 	}

@@ -8,6 +8,11 @@ import (
 
 var ErrNotFound = errors.New("url not found")
 
+type URLStore interface {
+	Save(ctx context.Context, originalURL string) (string, error)
+	Get(ctx context.Context, shortID string) (string, error)
+}
+
 type URLRepository struct {
 	db *sql.DB
 }

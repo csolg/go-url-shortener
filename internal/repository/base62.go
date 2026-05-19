@@ -25,6 +25,7 @@ func Encode(num uint64) string {
 func Decode(s string) (uint64, bool) {
 	var num uint64
 	base := uint64(len(alphabet))
+	maxUint := ^uint64(0)
 
 	for i := 0; i < len(s); i++ {
 		char := s[i]
@@ -41,6 +42,9 @@ func Decode(s string) (uint64, bool) {
 			return 0, false
 		}
 
+		if num > (maxUint-val)/base {
+			return 0, false
+		}
 		num = num*base + val
 	}
 

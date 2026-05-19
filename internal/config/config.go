@@ -3,22 +3,26 @@ package config
 import (
 	"flag"
 	"io"
+	"os"
 )
 
 const (
 	DefaultServerAddress = "localhost:8080"
 	DefaultBaseURL       = "http://localhost:8080"
+	DefaultDatabaseDSN   = "shortener.db"
 )
 
 type Config struct {
 	ServerAddress string
 	BaseURL       string
+	DatabaseDSN   string
 }
 
 func Parse(args []string) (Config, error) {
 	cfg := Config{
 		ServerAddress: DefaultServerAddress,
 		BaseURL:       DefaultBaseURL,
+		DatabaseDSN:   databaseDSN(),
 	}
 
 	flags := flag.NewFlagSet("shortener", flag.ContinueOnError)
@@ -31,4 +35,12 @@ func Parse(args []string) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func databaseDSN() string {
+	if dsn := os.Getenv("DATABASE_DSN"); dsn != "" {
+		return dsn
+	}
+
+	return DefaultDatabaseDSN
 }
